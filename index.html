@@ -317,14 +317,56 @@
 
         let currentUser = JSON.parse(localStorage.getItem('currentUser')) || null;
 
+        function getLatestPrice(productName, fallbackPrice) {
+            const products = JSON.parse(localStorage.getItem('products')) || [];
+            const found = products.find(p => p.name === productName);
+            return found ? Number(found.price) : Number(fallbackPrice);
+        }
+
+        function syncUserBookingsWithLatestPrices() {
+            if (!currentUser) return;
+            const products = JSON.parse(localStorage.getItem('products')) || [];
+            let users = JSON.parse(localStorage.getItem('users')) || [];
+            let changed = false;
+
+            if (Array.isArray(currentUser.bookings)) {
+                currentUser.bookings = currentUser.bookings.map(item => {
+                    const latestPrice = getLatestPrice(item.productName, item.price);
+                    if (item.price !== latestPrice) changed = true;
+                    return { ...item, price: latestPrice };
+                });
+            }
+
+            users = users.map(u => {
+                if (Array.isArray(u.bookings)) {
+                    const updatedBookings = u.bookings.map(item => {
+                        const prod = products.find(p => p.name === item.productName);
+                        const latestPrice = prod ? Number(prod.price) : Number(item.price);
+                        if (item.price !== latestPrice && u.email === currentUser.email) changed = true;
+                        return { ...item, price: latestPrice };
+                    });
+                    return { ...u, bookings: updatedBookings };
+                }
+                return u;
+            });
+
+            localStorage.setItem('users', JSON.stringify(users));
+            localStorage.setItem('currentUser', JSON.stringify(currentUser));
+            return changed;
+        }
+
         document.addEventListener('DOMContentLoaded', () => {
+            syncUserBookingsWithLatestPrices();
             updateUI();
             renderProducts();
         });
 
         function openModal(modalId) {
             document.getElementById(modalId).classList.remove('hidden');
-            if(modalId === 'cart-modal') renderCartModal();
+            if(modalId === 'cart-modal') {
+                syncUserBookingsWithLatestPrices();
+                renderCartModal();
+            }
         }
 
         function closeModal(modalId) {
@@ -365,6 +407,7 @@
 
             if(user) {
                 currentUser = user;
+                syncUserBookingsWithLatestPrices();
                 localStorage.setItem('currentUser', JSON.stringify(currentUser));
                 alert(`ยินดีต้อนรับคุณ ${user.name} เข้าสู่ระบบ`);
                 closeModal('login-modal');
@@ -390,6 +433,7 @@
             const bookingSection = document.getElementById('booking-section');
 
             if(currentUser) {
+                syncUserBookingsWithLatestPrices();
                 const initial = currentUser.name ? currentUser.name.charAt(0).toUpperCase() : 'U';
 
                 authNav.innerHTML = `
@@ -480,7 +524,7 @@
                                         <input type="number" id="qty-${p.name}" min="1" value="1" class="w-14 text-center border rounded px-1 py-1 text-sm focus:outline-none focus:ring-1 focus:ring-emerald-500">
                                     </div>
                                 </div>
-                                <button onclick="handleBooking('${p.name}', ${p.price})" class="w-full bg-emerald-600 text-white py-2 rounded-lg text-sm hover:bg-emerald-700 transition font-medium">
+                                <button onclick="handleBooking('${p.name}')" class="w-full bg-emerald-600 text-white py-2 rounded-lg text-sm hover:bg-emerald-700 transition font-medium">
                                     จอง / ซื้อสินค้า
                                 </button>
                             </div>
@@ -555,6 +599,7 @@
             if(p) {
                 p.price = Math.max(1, p.price + amount);
                 localStorage.setItem('products', JSON.stringify(products));
+                syncUserBookingsWithLatestPrices();
                 renderProducts();
                 renderAdminProducts();
             }
@@ -574,6 +619,7 @@
             if(p) {
                 p.price = newPrice;
                 localStorage.setItem('products', JSON.stringify(products));
+                syncUserBookingsWithLatestPrices();
                 renderProducts();
                 renderAdminProducts();
                 alert(`✅ อัปเดตราคา "${productName}" เป็น ${newPrice} บาท/กก. เรียบร้อยแล้ว`);
@@ -592,7 +638,7 @@
             alert('ลบสินค้าเรียบร้อยแล้ว');
         }
 
-        function handleBooking(productName, price) {
+        function handleBooking(productName) {
             if(!currentUser) {
                 alert('⚠️ กรุณาสมัครสมาชิกหรือเข้าสู่ระบบก่อนทำการจองแตงกวา');
                 openModal('login-modal');
@@ -604,6 +650,7 @@
 
             let products = JSON.parse(localStorage.getItem('products')) || [];
             let product = products.find(p => p.name === productName);
+            const price = product ? Number(product.price) : 0;
 
             if (!product || product.stock < qty) {
                 alert(`❌ สินค้าไม่เพียงพอ! ในสต็อกเหลือเพียง ${product ? product.stock : 0} กิโลกรัม`);
@@ -637,7 +684,7 @@
             localStorage.setItem('currentUser', JSON.stringify(currentUser));
 
             updateCartBadge();
-            alert(`🎉 เพิ่ม "${productName}" จำนวน ${qty} กก. ลงในตะกร้าแล้ว!`);
+            alert(`🎉 เพิ่ม "${productName}" จำนวน ${qty} กก. (ราคา ${price} บาท/กก.) ลงในตะกร้าแล้ว!`);
         }
 
         function renderCartModal() {
@@ -653,13 +700,14 @@
 
             let total = 0;
             currentUser.bookings.forEach((item, index) => {
-                let subtotal = item.price * item.qty;
+                const currentUnitPrice = getLatestPrice(item.productName, item.price);
+                let subtotal = currentUnitPrice * item.qty;
                 total += subtotal;
                 container.innerHTML += `
                     <div class="py-2.5 flex justify-between items-center">
                         <div>
                             <h4 class="font-bold text-gray-800 text-sm">${item.productName}</h4>
-                            <p class="text-xs text-gray-500">${item.price} บาท x ${item.qty} กก. = <span class="text-emerald-600 font-semibold">${subtotal} บาท</span></p>
+                            <p class="text-xs text-gray-500">${currentUnitPrice} บาท x ${item.qty} กก. = <span class="text-emerald-600 font-semibold">${subtotal} บาท</span></p>
                         </div>
                         <button onclick="removeFromCart(${index})" class="text-red-400 hover:text-red-600 text-sm font-bold px-2">&times; ลบ</button>
                     </div>
@@ -690,6 +738,8 @@
                 return;
             }
 
+            syncUserBookingsWithLatestPrices();
+
             const address = document.getElementById('checkout-address').value.trim();
             const pickupTime = document.getElementById('checkout-time').value;
 
@@ -715,7 +765,12 @@
                 }
             }
 
-            currentUser.bookings.forEach(item => {
+            const pricedItems = currentUser.bookings.map(item => {
+                const latestPrice = getLatestPrice(item.productName, item.price);
+                return { ...item, price: latestPrice };
+            });
+
+            pricedItems.forEach(item => {
                 let prod = products.find(p => p.name === item.productName);
                 if (prod) prod.stock -= item.qty;
             });
@@ -728,13 +783,13 @@
 
             let allOrders = JSON.parse(localStorage.getItem('allOrders')) || [];
             let orderId = 'ORD-' + Math.floor(100000 + Math.random() * 900000);
-            let totalAmount = currentUser.bookings.reduce((sum, item) => sum + (item.price * item.qty), 0);
+            let totalAmount = pricedItems.reduce((sum, item) => sum + (item.price * item.qty), 0);
 
             let newOrder = {
                 orderId,
                 customerName: currentUser.name,
                 customerEmail: currentUser.email,
-                items: [...currentUser.bookings],
+                items: pricedItems,
                 address: address,
                 pickupTime: formattedPickupTime,
                 total: totalAmount,
@@ -779,7 +834,7 @@
             }
 
             myOrders.forEach((order) => {
-                let itemsDesc = order.items.map(i => `${i.productName} (${i.qty} กก.)`).join(', ');
+                let itemsDesc = order.items.map(i => `${i.productName} (${i.qty} กก. × ${i.price}฿)`).join(', ');
                 container.innerHTML = `
                     <tr class="border-b">
                         <td class="py-3 px-3 font-semibold text-emerald-600">${order.orderId}</td>
